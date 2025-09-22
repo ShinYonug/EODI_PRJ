@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EODI - Video Analysis Tool</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- 좌측 사이드바 메뉴 -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h1 class="app-title">EODI</h1>
+                <p class="app-subtitle">Video Analysis Tool</p>
+            </div>
+
+            <nav class="sidebar-nav">
+                <button class="nav-button active" id="upload-btn">
+                    <span class="nav-icon">📤</span>
+                    <span class="nav-text">업로드</span>
+                </button>
+
+                <button class="nav-button" id="list-btn">
+                    <span class="nav-icon">📋</span>
+                    <span class="nav-text">목록</span>
+                </button>
+
+                <button class="nav-button" id="shorts-btn">
+                    <span class="nav-icon">✂️</span>
+                    <span class="nav-text">쇼츠생성</span>
+                </button>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="status-indicator">
+                    <div class="status-dot" id="status-dot"></div>
+                    <span class="status-text" id="status-text">준비됨</span>
+                </div>
+                <div class="ollama-status" id="ollama-status">
+                    <div class="ollama-indicator">
+                        <div class="ollama-dot" id="ollama-dot"></div>
+                        <span class="ollama-text" id="ollama-text">준비</span>
+                    </div>
+                    <div class="setup-buttons" id="setup-buttons">
+                        <button class="setup-btn" id="ollama-install-btn">Ollama 설치</button>
+                        <button class="setup-btn" id="model-download-btn" disabled>모델 다운로드</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 우측 메인 콘텐츠 영역 -->
+        <div class="main-content">
+            <div class="content-header">
+                <h2 class="content-title" id="content-title">업로드</h2>
+                <div class="content-actions">
+                    <!-- 각 메뉴에 따라 다른 액션 버튼들 -->
+                </div>
+            </div>
+
+            <div class="content-body" id="content-body">
+                <!-- 업로드 페이지 -->
+                <div class="page-content" id="upload-page">
+                    <div class="upload-area">
+                        <div class="upload-zone" id="upload-zone">
+                            <div class="upload-icon">🎬</div>
+                            <h3>비디오 파일을 드래그 앤 드롭하거나 클릭하세요</h3>
+                            <p>지원 형식: MP4, AVI, MOV, MKV</p>
+                            <input type="file" id="file-input" accept="video/*" style="display: none;">
+                        </div>
+                    </div>
+                    <div class="upload-info">
+                        <p><strong>주의사항:</strong></p>
+                        <ul>
+                            <li>최대 파일 크기: 2GB</li>
+                            <li>권장 해상도: 1920x1080 이상</li>
+                            <li>처리 시간은 파일 크기에 따라 다를 수 있습니다</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- 목록 페이지 -->
+                <div class="page-content hidden" id="list-page">
+                    <div class="video-list">
+                        <div class="empty-state">
+                            <div class="empty-icon">📂</div>
+                            <h3>업로드된 비디오가 없습니다</h3>
+                            <p>좌측 메뉴에서 '업로드'를 클릭하여 비디오를 추가하세요</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 쇼츠생성 페이지 -->
+                <div class="page-content hidden" id="shorts-page">
+                    <div class="shorts-generator">
+                        <div class="empty-state">
+                            <div class="empty-icon">✂️</div>
+                            <h3>쇼츠 생성할 비디오를 선택하세요</h3>
+                            <p>목록에서 분석이 완료된 비디오를 선택하여 쇼츠를 생성할 수 있습니다</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
