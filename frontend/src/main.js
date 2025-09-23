@@ -17,21 +17,28 @@ function getOllamaPaths() {
     return {
       installPath: 'C:\\EODI\\ollama',
       exePath: 'C:\\EODI\\ollama\\ollama.exe',
-      checkCommand: 'where ollama'
+      checkCommand: 'where ollama',
+      commonPaths: ['C:\\EODI\\ollama\\ollama.exe']
     };
   } else if (platform === 'darwin') {
-    // macOS: Desktop 폴더
+    // macOS: Homebrew 경로 우선 확인
     return {
-      installPath: path.join(homeDir, 'Desktop', 'ollama'),
-      exePath: path.join(homeDir, 'Desktop', 'ollama', 'ollama'),
-      checkCommand: 'which ollama'
+      installPath: '/opt/homebrew/bin/ollama',
+      exePath: '/opt/homebrew/bin/ollama',
+      checkCommand: 'which ollama',
+      commonPaths: [
+        '/opt/homebrew/bin/ollama',  // Homebrew 경로
+        path.join(homeDir, 'Desktop', 'ollama', 'ollama'),  // Desktop 경로
+        '/usr/local/bin/ollama'  // 기본 경로
+      ]
     };
   } else {
     // Linux 등 다른 OS
     return {
       installPath: '/usr/local/bin/ollama',
       exePath: '/usr/local/bin/ollama',
-      checkCommand: 'which ollama'
+      checkCommand: 'which ollama',
+      commonPaths: ['/usr/local/bin/ollama']
     };
   }
 }
@@ -41,15 +48,19 @@ function checkOllamaInstalled() {
   return new Promise((resolve) => {
     const paths = getOllamaPaths();
 
-    // 먼저 시스템 PATH에서 확인
-    exec(paths.checkCommand, (error, stdout, stderr) => {
-      if (!error && stdout.trim()) {
-        console.log('Ollama found in PATH:', stdout.trim());
+    // 1. PATH에서 실행 확인
+    exec('ollama --version 2>&1', (error, stdout, stderr) => {
+      console.log('ollama --version result:', { error: error?.code, stdout: stdout.trim(), stderr: stderr.trim() });
+
+      // stderr에 버전 정보가 나올 수 있음
+      const output = stdout + stderr;
+      if (output.includes('client version is') || (!error && output.trim())) {
+        console.log('Ollama is installed and working');
         resolve(true);
         return;
       }
 
-      // 지정된 경로에서 확인
+      // 2. 지정된 exePath 확인
       fs.access(paths.exePath, fs.constants.F_OK, (err) => {
         if (!err) {
           console.log('Ollama found at:', paths.exePath);
@@ -97,20 +108,45 @@ function installOllama() {
       console.log('Installing Ollama via Homebrew on macOS...');
 
       const installProcess = spawn('brew', ['install', 'ollama'], {
-        stdio: 'inherit'
+        stdio: 'pipe'
+      });
+
+      let hasError = false;
+
+      installProcess.stdout.on('data', (data) => {
+        const output = data.toString();
+        console.log('Brew stdout:', output);
+
+        // 설치 완료 메시지 확인
+        if (output.includes('🍺') && output.includes('ollama')) {
+          console.log('Ollama installation completed on macOS');
+          resolve(true);
+        }
+      });
+
+      installProcess.stderr.on('data', (data) => {
+        const output = data.toString();
+        console.log('Brew stderr:', output);
+
+        // 에러 메시지 확인
+        if (output.includes('Error') || output.includes('failed') || output.includes('locked')) {
+          hasError = true;
+        }
       });
 
       installProcess.on('close', (code) => {
-        if (code === 0) {
-          console.log('Ollama installation completed on macOS');
-          resolve();
+        if (code === 0 && !hasError) {
+          console.log('Ollama installation process completed successfully');
+          resolve(true);
         } else {
-          reject(new Error(`Ollama installation failed with code ${code}`));
+          console.error(`Ollama installation failed with code ${code}`);
+          resolve(false);
         }
       });
 
       installProcess.on('error', (error) => {
-        reject(error);
+        console.error('Brew install error:', error);
+        resolve(false);
       });
 
     } else if (platform === 'win32') {
@@ -125,14 +161,16 @@ function installOllama() {
       installProcess.on('close', (code) => {
         if (code === 0) {
           console.log('Ollama installation completed on Windows');
-          resolve();
+          resolve(true);
         } else {
-          reject(new Error(`Ollama installation failed with code ${code}`));
+          console.error(`Ollama installation failed with code ${code}`);
+          resolve(false);
         }
       });
 
       installProcess.on('error', (error) => {
-        reject(error);
+        console.error('Windows install error:', error);
+        resolve(false);
       });
 
     } else {
@@ -145,14 +183,16 @@ function installOllama() {
       installProcess.on('close', (code) => {
         if (code === 0) {
           console.log('Ollama installation completed on Linux');
-          resolve();
+          resolve(true);
         } else {
-          reject(new Error(`Ollama installation failed with code ${code}`));
+          console.error(`Ollama installation failed with code ${code}`);
+          resolve(false);
         }
       });
 
       installProcess.on('error', (error) => {
-        reject(error);
+        console.error('Linux install error:', error);
+        resolve(false);
       });
     }
   });
@@ -160,10 +200,54 @@ function installOllama() {
 
 // Ollama 서버 시작
 function startOllamaServer() {
-  return new Promise((resolve, reject) => {
-    console.log('Starting Ollama server...');
+  return new Promise(async (resolve, reject) => {
+    console.log('Checking Ollama server status...');
 
-    const paths = getOllamaPaths();
+    // 먼저 서버가 이미 실행 중인지 확인
+    const isRunning = await checkOllamaServerRunning();
+    if (isRunning) {
+      console.log('Ollama server is already running, verifying connection...');
+
+      // 서버가 실행 중이라도 연결이 제대로 되는지 다시 확인
+      let retries = 0;
+      const maxRetries = 3;
+
+      const verifyConnection = () => {
+        checkOllamaServerRunning().then((stillRunning) => {
+          if (stillRunning) {
+            console.log('Ollama server connection verified');
+            resolve();
+          } else if (retries < maxRetries) {
+            retries++;
+            console.log(`Server connection check failed, retry ${retries}/${maxRetries}`);
+            setTimeout(verifyConnection, 2000);
+          } else {
+            console.log('Server connection verification failed, starting new server');
+            startNewServer();
+          }
+        }).catch(() => {
+          if (retries < maxRetries) {
+            retries++;
+            console.log(`Server connection check failed, retry ${retries}/${maxRetries}`);
+            setTimeout(verifyConnection, 2000);
+          } else {
+            console.log('Server connection verification failed, starting new server');
+            startNewServer();
+          }
+        });
+      };
+
+      verifyConnection();
+      return;
+    }
+
+    // 서버가 실행 중이지 않으면 새로 시작
+    startNewServer();
+
+    function startNewServer() {
+      console.log('Starting new Ollama server...');
+
+      const paths = getOllamaPaths();
 
     // PATH에 있는 ollama 우선 사용, 없으면 지정된 경로 사용
     exec('which ollama', (error, stdout) => {
@@ -208,9 +292,9 @@ function startOllamaServer() {
           ollamaProcess.kill();
           reject(new Error('Ollama server startup timeout'));
         }
-      }, 30000);
+      }, 600000);
     });
-  });
+  }});
 }
 
 // qwen2.5-vl-7b 모델이 로드되어 있는지 확인
@@ -225,7 +309,7 @@ function checkModelLoaded() {
       try {
         const response = JSON.parse(stdout);
         const hasModel = response.models && response.models.some(model =>
-          model.name.includes('qwen2.5-vl-7b')
+          model.name.includes('qwen2.5vl:7b')
         );
         resolve(hasModel);
       } catch (e) {
@@ -235,28 +319,77 @@ function checkModelLoaded() {
   });
 }
 
-// qwen2.5-vl-7b 모델 다운로드
+// qwen2.5vl:7b 모델 다운로드 (spawn 사용으로 버퍼 문제 해결)
 function downloadModel() {
   return new Promise((resolve, reject) => {
-    console.log('Downloading qwen2.5-vl-7b model...');
+    console.log('Downloading qwen2.5vl:7b model...');
 
-    const downloadProcess = exec('ollama pull qwen2.5-vl-7b', (error, stdout, stderr) => {
-      if (error) {
-        console.error('Model download failed:', error);
-        reject(error);
-        return;
-      }
-
-      console.log('Model download completed');
-      resolve();
+    const downloadProcess = spawn('ollama', ['pull', 'qwen2.5vl:7b'], {
+      stdio: ['ignore', 'pipe', 'pipe']
     });
 
+    let completed = false;
+
     downloadProcess.stdout.on('data', (data) => {
-      console.log('Download progress:', data.toString());
+      const output = data.toString();
+      console.log('Download stdout:', output);
+
+      // 진행률 파싱 및 전송
+      const progressMatch = output.match(/(\d+)%/);
+      if (progressMatch) {
+        const progress = parseInt(progressMatch[1]);
+        mainWindow.webContents.send('download-progress', { progress, message: `다운로드 중... ${progress}%` });
+      }
+
+      // 다운로드 단계 표시
+      if (output.includes('pulling manifest')) {
+        mainWindow.webContents.send('download-progress', { progress: 5, message: '매니페스트 다운로드 중...' });
+      } else if (output.includes('pulling') && output.includes('GB')) {
+        mainWindow.webContents.send('download-progress', { progress: 30, message: '모델 파일 다운로드 중...' });
+      } else if (output.includes('verifying')) {
+        mainWindow.webContents.send('download-progress', { progress: 95, message: '파일 검증 중...' });
+      }
     });
 
     downloadProcess.stderr.on('data', (data) => {
-      console.log('Download stderr:', data.toString());
+      const output = data.toString();
+      console.log('Download stderr:', output);
+
+      // 성공 완료 메시지 확인
+      if (output.includes('success') || output.includes('complete')) {
+        completed = true;
+        console.log('Model download completed');
+        mainWindow.webContents.send('download-progress', { progress: 100, message: '다운로드 완료!' });
+        resolve();
+      }
+
+      // 에러 메시지 확인
+      if (output.includes('Error:') || output.includes('failed')) {
+        console.error('Download error:', output);
+        mainWindow.webContents.send('download-progress', { progress: -1, message: '다운로드 실패: ' + output });
+        if (!completed) {
+          reject(new Error(output));
+        }
+      }
+    });
+
+    downloadProcess.on('close', (code) => {
+      console.log(`Download process exited with code ${code}`);
+      if (!completed) {
+        if (code === 0) {
+          // 정상 종료
+          console.log('Model download completed successfully');
+          mainWindow.webContents.send('download-progress', { progress: 100, message: '다운로드 완료!' });
+          resolve();
+        } else {
+          reject(new Error(`Download process exited with code ${code}`));
+        }
+      }
+    });
+
+    downloadProcess.on('error', (error) => {
+      console.error('Download process error:', error);
+      reject(error);
     });
   });
 }
@@ -383,6 +516,9 @@ ipcMain.handle('check-ollama-status', async () => {
   try {
     const ollamaInstalled = await checkOllamaInstalled();
     const serverRunning = await checkOllamaServerRunning();
+    if(!serverRunning){
+      serverRunning = await startOllamaServer();
+    };
     const modelReady = serverRunning ? await checkModelLoaded() : false;
 
     return {
@@ -420,21 +556,27 @@ ipcMain.handle('install-ollama', async () => {
     console.log('Installing Ollama...');
     mainWindow.webContents.send('ollama-status', { status: 'installing', message: 'Ollama 설치 중...' });
 
-    await installOllama();
+    const installResult = await installOllama();
 
-    // 서버가 이미 실행 중인지 확인
-    const serverRunning = await checkOllamaServerRunning();
-    if (!serverRunning) {
-      mainWindow.webContents.send('ollama-status', { status: 'starting', message: 'Ollama 서버 시작 중...' });
-      await startOllamaServer();
-    } else {
-      console.log('Ollama server is already running, skipping start');
-      mainWindow.webContents.send('ollama-status', { status: 'ready', message: 'Ollama 준비됨' });
+    if (!installResult) {
+      throw new Error('Ollama installation failed');
     }
 
+    // 설치 성공 후 서버 상태 확인 및 시작
+    mainWindow.webContents.send('ollama-status', { status: 'starting', message: 'Ollama 서버 시작 중...' });
+
+    const serverRunning = await checkOllamaServerRunning();
+    if (!serverRunning) {
+      await startOllamaServer();
+    } else {
+      console.log('Ollama server is already running');
+    }
+
+    mainWindow.webContents.send('ollama-status', { status: 'ready', message: 'Ollama 준비됨' });
     return { success: true };
   } catch (error) {
     console.error('Ollama installation failed:', error);
+    mainWindow.webContents.send('ollama-status', { status: 'error', message: 'Ollama 설치 실패' });
     return { success: false, error: error.message };
   }
 });
@@ -442,8 +584,8 @@ ipcMain.handle('install-ollama', async () => {
 // 모델 다운로드 핸들러
 ipcMain.handle('download-model', async () => {
   try {
-    console.log('Downloading qwen2.5-vl-7b model...');
-    mainWindow.webContents.send('ollama-status', { status: 'downloading', message: 'qwen2.5-vl-7b 모델 다운로드 중...' });
+    console.log('Downloading qwen2.5vl:7b model...');
+    mainWindow.webContents.send('ollama-status', { status: 'downloading', message: 'qwen2.5vl:7b 모델 다운로드 중...' });
 
     await downloadModel();
 

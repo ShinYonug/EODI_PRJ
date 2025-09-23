@@ -13,6 +13,9 @@ const ollamaDot = document.getElementById('ollama-dot');
 const ollamaText = document.getElementById('ollama-text');
 const ollamaInstallBtn = document.getElementById('ollama-install-btn');
 const modelDownloadBtn = document.getElementById('model-download-btn');
+const progressContainer = document.getElementById('progress-container');
+const progressFill = document.getElementById('progress-fill');
+const progressText = document.getElementById('progress-text');
 
 // 페이지 내용들
 const pages = {
@@ -365,6 +368,15 @@ ollamaInstallBtn.addEventListener('click', async () => {
     }
 });
 
+ollamaServerBtn.addEventListener('click',async ()=>{
+    console.log('Ollama Serve');
+    try{
+        ollamaInstallBtn.disabled = true;
+    }catch(e){
+        console.error('Failed to start Ollama Serve')
+    } 
+});
+
 // 모델 다운로드 버튼 이벤트
 modelDownloadBtn.addEventListener('click', async () => {
     console.log('Starting model download...');
@@ -439,16 +451,118 @@ async function checkModelStatus() {
     }
 }
 
+// Ollama 설치 버튼 이벤트
+ollamaInstallBtn.addEventListener('click', async () => {
+    console.log('Starting Ollama installation...');
+
+    // 버튼 비활성화
+    ollamaInstallBtn.disabled = true;
+    ollamaInstallBtn.textContent = '설치 중...';
+
+    try {
+        // 메인 프로세스에 Ollama 설치 요청
+        const result = await ipcRenderer.invoke('install-ollama');
+
+        if (result.success) {
+            console.log('Ollama installation completed successfully');
+            // 설치 완료 후 모델 다운로드 버튼 활성화
+            modelDownloadBtn.disabled = false;
+            ollamaInstallBtn.style.display = 'none';
+            checkModelStatus(); // 모델 상태 확인
+        } else {
+            console.error('Ollama installation failed:', result.error);
+            showNotification('오류', `Ollama 설치 실패: ${result.error}`, 'error');
+
+            // 버튼 복원
+            ollamaInstallBtn.disabled = false;
+            ollamaInstallBtn.textContent = 'Ollama 설치';
+        }
+    } catch (error) {
+        console.error('Failed to start Ollama installation:', error);
+        showNotification('오류', 'Ollama 설치 시작에 실패했습니다.', 'error');
+
+        // 버튼 복원
+        ollamaInstallBtn.disabled = false;
+        ollamaInstallBtn.textContent = 'Ollama 설치';
+    }
+});
+
+// 모델 다운로드 버튼 이벤트
+modelDownloadBtn.addEventListener('click', async () => {
+    console.log('Starting model download...');
+
+    // 버튼 비활성화 및 진행률 표시 활성화
+    modelDownloadBtn.disabled = true;
+    modelDownloadBtn.textContent = '다운로드 중...';
+    progressContainer.style.display = 'block';
+    updateDownloadProgress(0, '다운로드 시작 중...');
+
+    try {
+        // 메인 프로세스에 모델 다운로드 요청
+        const result = await ipcRenderer.invoke('download-model');
+
+        if (result.success) {
+            console.log('Model download completed successfully');
+            updateDownloadProgress(100, '다운로드 완료!');
+            // 다운로드 완료 후 버튼 숨기기
+            setTimeout(() => {
+                modelDownloadBtn.style.display = 'none';
+                progressContainer.style.display = 'none';
+            }, 2000);
+        } else {
+            console.error('Model download failed:', result.error);
+            showNotification('오류', `모델 다운로드 실패: ${result.error}`, 'error');
+
+            // 버튼 복원 및 진행률 숨기기
+            modelDownloadBtn.disabled = false;
+            modelDownloadBtn.textContent = '모델 다운로드';
+            progressContainer.style.display = 'none';
+        }
+    } catch (error) {
+        console.error('Failed to start model download:', error);
+        showNotification('오류', '모델 다운로드 시작에 실패했습니다.', 'error');
+
+        // 버튼 복원 및 진행률 숨기기
+        modelDownloadBtn.disabled = false;
+        modelDownloadBtn.textContent = '모델 다운로드';
+        progressContainer.style.display = 'none';
+    }
+});
+
+// 다운로드 진행률 표시 함수
+function updateDownloadProgress(progress, message) {
+    if (progress >= 0) {
+        progressFill.style.width = `${progress}%`;
+    }
+    progressText.textContent = message;
+}
+
 // Ollama 상태 이벤트 리스너
 ipcRenderer.on('ollama-status', (event, data) => {
     console.log('Ollama status update:', data);
     updateOllamaStatus(data.status, data.message);
 
-    // 설치 완료시 버튼 상태 업데이트
+    // 상태에 따른 버튼 처리
     if (data.status === 'ready') {
         ollamaInstallBtn.style.display = 'none';
-        modelDownloadBtn.style.display = 'none';
+        modelDownloadBtn.disabled = false;
+        modelDownloadBtn.style.display = 'block';
+        progressContainer.style.display = 'none';
+    } else if (data.status === 'error') {
+        ollamaInstallBtn.disabled = false;
+        ollamaInstallBtn.textContent = '설치 다시 시도';
+        modelDownloadBtn.disabled = true;
+        progressContainer.style.display = 'none';
+    } else if (data.status === 'installing') {
+        ollamaInstallBtn.disabled = true;
+        modelDownloadBtn.disabled = true;
     }
+});
+
+// 다운로드 진행률 이벤트 리스너
+ipcRenderer.on('download-progress', (event, data) => {
+    console.log('Download progress:', data);
+    updateDownloadProgress(data.progress, data.message);
 });
 
 // 앱 초기화
@@ -457,7 +571,7 @@ document.addEventListener('DOMContentLoaded', () => {
     switchPage('upload');
 
     // 상태 표시 업데이트
-    updateStatusIndicator('준비됨', 'ready');
+    updateStatusIndicator('프로그램 설치', 'ready');
 
     // Ollama 상태 확인
     checkOllamaStatus();
