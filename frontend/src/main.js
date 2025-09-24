@@ -494,12 +494,6 @@ app.on('activate', () => {
 });
 
 // IPC 통신 핸들러들 (나중에 백엔드와 통신할 때 사용)
-ipcMain.handle('upload-video', async (event, filePath) => {
-  // TODO: 비디오 업로드 처리
-  console.log('Upload video:', filePath);
-  return { success: true, message: '비디오가 업로드되었습니다.' };
-});
-
 ipcMain.handle('get-video-list', async () => {
   // TODO: 비디오 목록 가져오기
   return [];

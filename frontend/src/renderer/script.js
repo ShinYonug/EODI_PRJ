@@ -137,9 +137,12 @@ fileInput.addEventListener('change', (e) => {
 
 // 파일 업로드 처리 함수
 async function handleFileUpload(file) {
-    // 파일 타입 검증
-    if (!file.type.startsWith('video/')) {
-        showNotification('오류', '비디오 파일만 업로드할 수 있습니다.', 'error');
+    // 확장자 검증 (파일명과 무관하게 확장자만 체크)
+    const allowedExtensions = ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm'];
+    const fileExtension = file.name.toLowerCase().substring(file.name.lastIndexOf('.'));
+
+    if (!allowedExtensions.includes(fileExtension)) {
+        showNotification('오류', '지원하지 않는 파일 형식입니다. (MP4, AVI, MOV, MKV, WMV, FLV, WebM만 지원)', 'error');
         return;
     }
 
@@ -156,10 +159,16 @@ async function handleFileUpload(file) {
             <div class="upload-icon">⏳</div>
             <h3>업로드 중...</h3>
             <p>${file.name}</p>
+            <div class="upload-progress">
+                <div class="progress-bar-upload">
+                    <div class="progress-fill-upload" id="upload-progress-fill"></div>
+                </div>
+                <div class="progress-text-upload" id="upload-progress-text">준비 중...</div>
+            </div>
         `;
 
-        // Electron 메인 프로세스로 파일 전송
-        const result = await ipcRenderer.invoke('upload-video', file.path);
+        // 청크 방식으로 파일 업로드
+        const result = await uploadFileInChunks(file);
 
         if (result.success) {
             showNotification('성공', result.message, 'success');
@@ -168,12 +177,12 @@ async function handleFileUpload(file) {
             switchPage('list');
             refreshVideoList();
         } else {
-            throw new Error(result.message);
+            throw new Error(result.message || '업로드 실패');
         }
 
     } catch (error) {
         console.error('Upload error:', error);
-        showNotification('오류', '업로드에 실패했습니다.', 'error');
+        showNotification('오류', `업로드에 실패했습니다: ${error.message}`, 'error');
 
         // 업로드 영역 복원
         uploadZone.innerHTML = `
@@ -181,6 +190,85 @@ async function handleFileUpload(file) {
             <h3>비디오 파일을 드래그 앤 드롭하거나 클릭하세요</h3>
             <p>지원 형식: MP4, AVI, MOV, MKV</p>
         `;
+    }
+}
+
+// 청크 방식 파일 업로드 함수
+async function uploadFileInChunks(file) {
+    const chunkSize = 1024 * 1024; // 1MB 청크
+    const totalChunks = Math.ceil(file.size / chunkSize);
+
+    // 초기화 요청
+    const initResponse = await fetch('http://127.0.0.1:8000/upload/init', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            filename: file.name,
+            fileSize: file.size,
+            totalChunks: totalChunks
+        })
+    });
+
+    if (!initResponse.ok) {
+        throw new Error('업로드 초기화 실패');
+    }
+
+    const { uploadId } = await initResponse.json();
+
+    // 청크별 업로드
+    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+        const start = chunkIndex * chunkSize;
+        const end = Math.min(start + chunkSize, file.size);
+        const chunk = file.slice(start, end);
+
+        const formData = new FormData();
+        formData.append('uploadId', uploadId);
+        formData.append('chunkIndex', chunkIndex);
+        formData.append('totalChunks', totalChunks);
+        formData.append('chunk', chunk);
+
+        const chunkResponse = await fetch('http://127.0.0.1:8000/upload/chunk', {
+            method: 'POST',
+            body: formData
+        });
+
+        if (!chunkResponse.ok) {
+            throw new Error(`청크 ${chunkIndex + 1}/${totalChunks} 업로드 실패`);
+        }
+
+        // 진행률 업데이트
+        const progress = Math.round(((chunkIndex + 1) / totalChunks) * 100);
+        updateUploadProgress(progress, `업로드 중... ${chunkIndex + 1}/${totalChunks} (${progress}%)`);
+    }
+
+    // 완료 요청
+    const completeResponse = await fetch('http://127.0.0.1:8000/upload/complete', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ uploadId })
+    });
+
+    if (!completeResponse.ok) {
+        throw new Error('업로드 완료 처리 실패');
+    }
+
+    return await completeResponse.json();
+}
+
+// 업로드 진행률 표시 함수
+function updateUploadProgress(progress, message) {
+    const progressFill = document.getElementById('upload-progress-fill');
+    const progressText = document.getElementById('upload-progress-text');
+
+    if (progressFill) {
+        progressFill.style.width = `${progress}%`;
+    }
+    if (progressText) {
+        progressText.textContent = message;
     }
 }
 

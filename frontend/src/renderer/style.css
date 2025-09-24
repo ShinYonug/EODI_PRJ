@@ -211,6 +211,37 @@ body {
     opacity: 0.9;
 }
 
+/* 업로드 진행률 스타일 */
+.upload-progress {
+    width: 100%;
+    max-width: 300px;
+    margin-top: 15px;
+}
+
+.progress-bar-upload {
+    width: 100%;
+    height: 8px;
+    background-color: rgba(255, 255, 255, 0.3);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.progress-fill-upload {
+    height: 100%;
+    background: linear-gradient(90deg, #4CAF50, #45a049);
+    width: 0%;
+    transition: width 0.3s ease;
+    border-radius: 4px;
+}
+
+.progress-text-upload {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #666;
+    text-align: center;
+    font-weight: 500;
+}
+
 /* 우측 메인 콘텐츠 */
 .main-content {
     flex: 1;
