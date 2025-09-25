@@ -3,6 +3,7 @@ const path = require('path');
 const { spawn, exec } = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const http = require('http');
 
 let mainWindow;
 let ollamaProcess = null;
@@ -245,7 +246,7 @@ function startOllamaServer() {
     startNewServer();
 
     function startNewServer() {
-      console.log('Starting new Ollama server...');
+      console.log('Starting new Ollama server with optimized settings...');
 
       const paths = getOllamaPaths();
 
@@ -253,9 +254,31 @@ function startOllamaServer() {
     exec('which ollama', (error, stdout) => {
       const ollamaCmd = error ? paths.exePath : 'ollama';
 
+      // M4 Max 최적화된 Ollama 환경변수 설정
+      const optimizedEnv = {
+        ...process.env,
+        OLLAMA_NUM_PARALLEL: '1',           // 단일 모델 전용 (순차 처리)
+        OLLAMA_MAX_LOADED_MODELS: '1',      // 모델 1개만 로드
+        OLLAMA_FLASH_ATTENTION: '1',        // Flash Attention 활성화
+        OLLAMA_NUM_GPU: '40',               // M4 Max 40개 GPU 코어 명시적 사용
+        OLLAMA_KEEP_ALIVE: '15m',           // 모델 15분간 메모리 유지
+        OLLAMA_GPU_LAYERS: '99',            // 모든 레이어를 GPU에서 처리
+        OLLAMA_LOAD_TIMEOUT: '300',         // 로드 타임아웃 5분
+        OLLAMA_GPU_MEMORY_FRACTION: '0.9',  // 통합 메모리 90% 사용
+        OLLAMA_MAX_QUEUE: '5',              // 대기열 크기 (단일 모델용)
+        OLLAMA_CONTEXT_LENGTH: '8192'       // 컨텍스트 길이 설정
+      };
+
+      console.log('Ollama environment variables:', {
+        OLLAMA_NUM_PARALLEL: optimizedEnv.OLLAMA_NUM_PARALLEL,
+        OLLAMA_MAX_LOADED_MODELS: optimizedEnv.OLLAMA_MAX_LOADED_MODELS,
+        OLLAMA_GPU_MEMORY_FRACTION: optimizedEnv.OLLAMA_GPU_MEMORY_FRACTION
+      });
+
       ollamaProcess = spawn(ollamaCmd, ['serve'], {
         stdio: ['ignore', 'pipe', 'pipe'],
-        detached: false
+        detached: false,
+        env: optimizedEnv  // 최적화된 환경변수 적용
       });
 
       let serverReady = false;
@@ -431,7 +454,7 @@ async function initializeOllama() {
   }
 }
 
-function createWindow() {
+async function createWindow() {
   // 브라우저 창 생성
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -463,11 +486,82 @@ function createWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+  // 렌더러가 로드된 후 초기화(이벤트 미수신 방지)
+  mainWindow.webContents.once('did-finish-load', async () => {
+    try {
+      await startBackendIfNeeded();
+      const installed = await checkOllamaInstalled();
+      if (installed) {
+        let running = await checkOllamaServerRunning();
+        if (!running) {
+          await startOllamaServer();
+          running = true;
+        }
+        const modelReady = running ? await checkModelLoaded() : false;
+        if (modelReady) {
+          mainWindow.webContents.send('ollama-status', { status: 'ready', message: '모두 준비됨' });
+        } else {
+          mainWindow.webContents.send('ollama-status', { status: 'ready', message: 'Ollama 준비됨 (모델 필요)' });
+        }
+      } else {
+        mainWindow.webContents.send('ollama-status', { status: 'error', message: 'Ollama 설치 필요' });
+      }
+    } catch (e) {
+      console.error('Startup init failed:', e);
+      mainWindow.webContents.send('ollama-status', { status: 'error', message: '초기화 실패' });
+    }
+  });
+}
+
+// 개발모드에서만 백엔드 기동 (프로덕션은 번들된 바이너리 사용 가정)
+let backendProcess = null;
+async function startBackendIfNeeded() {
+  console.log('startBackendIfNeeded');
+  // 개발 모드에서만 자동 기동
+  const isDev = process.env.NODE_ENV === 'development';
+  if (!isDev) {
+    console.log('Skipping backend auto-start (NODE_ENV != development)');
+    return;
+  }
+  if (backendProcess) {
+    console.log('Backend already running (cached process)');
+    return;
+  }
+
+  // 후보 실행 경로들 (순서대로 시도)
+  const projectRoot = path.join(__dirname, '..');
+  const venvPython = path.join(projectRoot, 'backend', 'venv', 'bin', 'python');
+  const backendPath = path.join(projectRoot, 'backend', 'main.py');
+
+  const candidates = [];
+  // macOS/Linux venv
+  candidates.push({ cmd: venvPython, args: [backendPath], label: 'venv python' });
+  // 시스템 python3
+  candidates.push({ cmd: 'python3', args: [backendPath], label: 'python3' });
+  // 시스템 python
+  candidates.push({ cmd: 'python', args: [backendPath], label: 'python' });
+
+  let started = false;
+  for (const c of candidates) {
+    try {
+      console.log(`Trying backend start with ${c.label}: ${c.cmd} ${c.args.join(' ')}`);
+      backendProcess = spawn(c.cmd, c.args, { stdio: 'ignore', detached: false });
+      console.log('Backend started with', c.label);
+      started = true;
+      break;
+    } catch (e) {
+      console.error(`Failed with ${c.label}:`, e);
+    }
+  }
+
+  if (!started) {
+    console.error('All backend start attempts failed.');
+  }
 }
 
 // 앱이 준비되면 창 생성
-app.whenReady().then(() => {
-  createWindow();
+app.whenReady().then(async () => {
+  await createWindow();
 });
 
 // 모든 창이 닫혔을 때 앱 종료 (macOS 제외)
@@ -495,8 +589,106 @@ app.on('activate', () => {
 
 // IPC 통신 핸들러들 (나중에 백엔드와 통신할 때 사용)
 ipcMain.handle('get-video-list', async () => {
-  // TODO: 비디오 목록 가져오기
-  return [];
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: '127.0.0.1',
+      port: 8000,
+      path: '/videos',
+      method: 'GET'
+    };
+
+    const req = http.request(options, (res) => {
+      let data = '';
+
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+
+      res.on('end', () => {
+        try {
+          const response = JSON.parse(data);
+          console.log('Video list from backend:', response);
+          resolve(response.videos || []);
+        } catch (error) {
+          console.error('Error parsing video list:', error);
+          resolve([]);
+        }
+      });
+    });
+
+    req.on('error', (error) => {
+      console.error('Error fetching video list:', error);
+      resolve([]);
+    });
+
+    req.end();
+  });
+});
+
+ipcMain.handle('analyze-video', async (event, videoId) => {
+  return new Promise((resolve) => {
+    console.log(`Starting video analysis for video ID: ${videoId}`);
+    
+    const postData = JSON.stringify({});
+    
+    const options = {
+      hostname: '127.0.0.1',
+      port: 8000,
+      path: `/analyze/${videoId}`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData)
+      }
+    };
+
+    const req = http.request(options, (res) => {
+      let data = '';
+
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+
+      res.on('end', () => {
+        try {
+          if (res.statusCode === 200) {
+            const result = JSON.parse(data);
+            console.log('Video analysis started:', result);
+            
+            resolve({
+              success: true,
+              message: result.message || '비디오 분석이 시작되었습니다',
+              video_id: videoId,
+              status: result.status
+            });
+          } else {
+            console.error(`HTTP error! status: ${res.statusCode}`);
+            resolve({
+              success: false,
+              message: `서버 오류: ${res.statusCode}`
+            });
+          }
+        } catch (error) {
+          console.error('Failed to parse analysis response:', error);
+          resolve({
+            success: false,
+            message: '응답 파싱 실패'
+          });
+        }
+      });
+    });
+
+    req.on('error', (error) => {
+      console.error('Failed to start video analysis:', error);
+      resolve({
+        success: false,
+        message: error.message || '비디오 분석 시작에 실패했습니다'
+      });
+    });
+
+    req.write(postData);
+    req.end();
+  });
 });
 
 ipcMain.handle('generate-shorts', async (event, videoId) => {
@@ -509,10 +701,10 @@ ipcMain.handle('generate-shorts', async (event, videoId) => {
 ipcMain.handle('check-ollama-status', async () => {
   try {
     const ollamaInstalled = await checkOllamaInstalled();
-    const serverRunning = await checkOllamaServerRunning();
-    if(!serverRunning){
+    let serverRunning = await checkOllamaServerRunning();
+    if (!serverRunning) {
       serverRunning = await startOllamaServer();
-    };
+    }
     const modelReady = serverRunning ? await checkModelLoaded() : false;
 
     return {

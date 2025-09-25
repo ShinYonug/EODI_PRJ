@@ -38,13 +38,13 @@
                     <span class="status-text" id="status-text">프로그램 설치</span>
                 </div>
                 <div class="ollama-status" id="ollama-status">
-                    <div class="ollama-indicator">
+                    <div class="ollama-indicator" style="display: none;">
                         <div class="ollama-dot" id="ollama-dot"></div>
-                        <span class="ollama-text" id="ollama-text">준비</span>
+                        <span class="ollama-text" id="ollama-text"></span>
                     </div>
                     <div class="setup-buttons" id="setup-buttons">
-                        <button class="setup-btn" id="ollama-install-btn">Ollama 설치 및 실행</button>
-                        <button class="setup-btn" id="model-download-btn" disabled>모델 다운로드</button>
+                        <button class="setup-btn" id="ollama-install-btn" style="display: none;">Ollama 설치 및 실행</button>
+                        <button class="setup-btn" id="model-download-btn" disabled style="display: none;">모델 다운로드</button>
                     </div>
                     <div class="progress-container" id="progress-container" style="display: none;">
                         <div class="progress-bar">
@@ -79,8 +79,6 @@
                     <div class="upload-info">
                         <p><strong>주의사항:</strong></p>
                         <ul>
-                            <li>최대 파일 크기: 2GB</li>
-                            <li>권장 해상도: 1920x1080 이상</li>
                             <li>처리 시간은 파일 크기에 따라 다를 수 있습니다</li>
                         </ul>
                     </div>
@@ -100,10 +98,11 @@
                 <!-- 쇼츠생성 페이지 -->
                 <div class="page-content hidden" id="shorts-page">
                     <div class="shorts-generator">
-                        <div class="empty-state">
-                            <div class="empty-icon">✂️</div>
-                            <h3>쇼츠 생성할 비디오를 선택하세요</h3>
-                            <p>목록에서 분석이 완료된 비디오를 선택하여 쇼츠를 생성할 수 있습니다</p>
+                        <div class="page-header">
+                        </div>
+                        
+                        <div class="shorts-video-list">
+                            <!-- JavaScript로 동적 생성 -->
                         </div>
                     </div>
                 </div>

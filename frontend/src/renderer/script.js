@@ -16,6 +16,7 @@ const modelDownloadBtn = document.getElementById('model-download-btn');
 const progressContainer = document.getElementById('progress-container');
 const progressFill = document.getElementById('progress-fill');
 const progressText = document.getElementById('progress-text');
+const ollamaServerBtn = document.getElementById('ollama-server-btn');
 
 // 페이지 내용들
 const pages = {
@@ -62,7 +63,26 @@ function switchPage(pageName) {
     // 액션 버튼들 업데이트
     updateActionButtons(pageName);
 
+    // 좌측 메뉴 활성 상태 업데이트
+    navButtons.forEach(btn => {
+        if (btn.id === `${pageName}-btn`) {
+            btn.classList.add('active');
+        } else {
+            btn.classList.remove('active');
+        }
+    });
+
     currentPage = pageName;
+
+    // 목록 페이지로 전환 시 자동 새로고침
+    if (pageName === 'list') {
+        refreshVideoList();
+    }
+    
+    // 쇼츠 생성 페이지로 전환 시 분석 완료된 비디오 목록 로드
+    if (pageName === 'shorts') {
+        refreshShortsVideoList();
+    }
 }
 
 // 액션 버튼 업데이트 함수
@@ -146,12 +166,6 @@ async function handleFileUpload(file) {
         return;
     }
 
-    // 파일 크기 검증 (2GB)
-    const maxSize = 2 * 1024 * 1024 * 1024; // 2GB
-    if (file.size > maxSize) {
-        showNotification('오류', '파일 크기가 2GB를 초과합니다.', 'error');
-        return;
-    }
 
     try {
         // 로딩 표시
@@ -171,11 +185,22 @@ async function handleFileUpload(file) {
         const result = await uploadFileInChunks(file);
 
         if (result.success) {
+            // 업로드 영역 복원
+            uploadZone.innerHTML = `
+                <div class="upload-icon">🎬</div>
+                <h3>비디오 파일을 드래그 앤 드롭하거나 클릭하세요</h3>
+            `;
+
             showNotification('성공', result.message, 'success');
 
             // 목록 페이지로 전환
-            switchPage('list');
-            refreshVideoList();
+            const listButton = document.getElementById('list-btn');
+            const clickEvent = new MouseEvent('click', {
+                view: window,
+                bubbles: true,
+                cancelable: true
+            });
+            listButton.dispatchEvent(clickEvent);
         } else {
             throw new Error(result.message || '업로드 실패');
         }
@@ -188,7 +213,6 @@ async function handleFileUpload(file) {
         uploadZone.innerHTML = `
             <div class="upload-icon">🎬</div>
             <h3>비디오 파일을 드래그 앤 드롭하거나 클릭하세요</h3>
-            <p>지원 형식: MP4, AVI, MOV, MKV</p>
         `;
     }
 }
@@ -240,7 +264,15 @@ async function uploadFileInChunks(file) {
 
         // 진행률 업데이트
         const progress = Math.round(((chunkIndex + 1) / totalChunks) * 100);
-        updateUploadProgress(progress, `업로드 중... ${chunkIndex + 1}/${totalChunks} (${progress}%)`);
+        const progressFill = document.getElementById('upload-progress-fill');
+        const progressText = document.getElementById('upload-progress-text');
+
+        if (progressFill) {
+            progressFill.style.width = `${progress}%`;
+        }
+        if (progressText) {
+            progressText.textContent = `업로드 중... ${progress}%`;
+        }
     }
 
     // 완료 요청
@@ -304,13 +336,16 @@ function updateVideoListDisplay(videos) {
             ${videos.map(video => `
                 <div class="video-item" data-id="${video.id}">
                     <div class="video-thumbnail">
-                        <img src="${video.thumbnail || 'placeholder.png'}" alt="${video.name}">
-                        <div class="video-duration">${video.duration}</div>
+                        <img src="${video.thumbnail ? 'http://127.0.0.1:8000' + video.thumbnail : '/assets/placeholder.jpg'}" 
+                             alt="${video.original_name || video.filename}" 
+                             onerror="this.src='/assets/placeholder.jpg'">
+                        <div class="video-duration">${video.duration || '00:00'}</div>
                     </div>
                     <div class="video-info">
-                        <h4>${video.name}</h4>
-                        <p>업로드: ${video.uploadDate}</p>
+                        <h4>${video.original_name || video.filename}</h4>
+                        <p>업로드: ${new Date(video.uploaded_at).toLocaleString()}</p>
                         <div class="video-status status-${video.status}">${getStatusText(video.status)}</div>
+                        <button onclick="startAnalysis(${video.id})" class="analyze-btn">분석하기</button>
                     </div>
                 </div>
             `).join('')}
@@ -330,13 +365,262 @@ function getStatusText(status) {
 }
 
 // 분석 시작
-async function startAnalysis() {
-    showNotification('정보', '분석 기능은 아직 구현되지 않았습니다.', 'info');
+async function startAnalysis(videoId) {
+    try {
+        // 1. 즉시 UI를 "분석 중" 상태로 업데이트
+        updateVideoStatusInUI(videoId, 'analyzing', 0);
+        
+        const result = await ipcRenderer.invoke('analyze-video', videoId);
+        if (result.success) {
+            showNotification('성공', result.message, 'success');
+            
+            // 2. 분석 진행 상황을 주기적으로 체크 (첫 새로고침은 3초 후)
+            startAnalysisPolling(videoId);
+        } else {
+            // 실패 시 상태 복원
+            await refreshVideoList();
+            throw new Error(result.message || '분석 시작 실패');
+        }
+    } catch (error) {
+        console.error('Analysis error:', error);
+        showNotification('오류', error.message, 'error');
+        // 에러 시 목록 새로고침
+        await refreshVideoList();
+    }
+}
+
+// UI에서 비디오 상태 즉시 업데이트
+function updateVideoStatusInUI(videoId, status, progress = 0) {
+    const videoItem = document.querySelector(`.video-item[data-id="${videoId}"]`);
+    if (videoItem) {
+        const statusElement = videoItem.querySelector('.video-status');
+        const analyzeBtn = videoItem.querySelector('.analyze-btn');
+        
+        if (statusElement) {
+            statusElement.textContent = getStatusText(status);
+            statusElement.className = `video-status status-${status}`;
+        }
+        
+        if (analyzeBtn) {
+            if (status === 'analyzing') {
+                analyzeBtn.disabled = true;
+                analyzeBtn.textContent = '분석 중...';
+            } else {
+                analyzeBtn.disabled = false;
+                analyzeBtn.textContent = '분석하기';
+            }
+        }
+    }
+}
+
+// 분석 진행 상황 폴링
+function startAnalysisPolling(videoId) {
+    // 첫 번째 체크를 3초 후에 시작 (즉시 호출 방지)
+    const pollInterval = setInterval(async () => {
+        try {
+            const videoList = await ipcRenderer.invoke('get-video-list');
+            const video = videoList.videos.find(v => v.id === videoId);
+            
+            if (video) {
+                if (video.status === 'completed') {
+                    clearInterval(pollInterval);
+                    showNotification('완료', '비디오 분석이 완료되었습니다!', 'success');
+                    // 완료 시 자동 새로고침
+                    await refreshVideoList();
+                } else if (video.status === 'failed') {
+                    clearInterval(pollInterval);
+                    showNotification('실패', '비디오 분석이 실패했습니다.', 'error');
+                    // 실패 시 자동 새로고침
+                    await refreshVideoList();
+                } else if (video.status === 'analyzing') {
+                    // 분석 중일 때는 단순히 "분석 중..." 표시
+                    updateVideoStatusInUI(videoId, 'analyzing');
+                    console.log('분석 진행 중...');
+                }
+            }
+        } catch (error) {
+            console.error('Polling error:', error);
+            clearInterval(pollInterval);
+        }
+    }, 3000); // 3초마다 체크 (더 빠른 응답)
+    
+    // 10분 후 자동 종료 (타임아웃)
+    setTimeout(() => {
+        clearInterval(pollInterval);
+    }, 600000);
+}
+
+// 쇼츠 생성용 분석 완료된 비디오 목록 새로고침
+async function refreshShortsVideoList() {
+    try {
+        const response = await fetch('http://127.0.0.1:8000/shorts/videos');
+        const data = await response.json();
+        updateShortsVideoListDisplay(data.videos || []);
+    } catch (error) {
+        console.error('Failed to get shorts video list:', error);
+        showNotification('오류', '쇼츠용 비디오 목록을 불러오는데 실패했습니다.', 'error');
+    }
+}
+
+// 쇼츠용 비디오 목록 표시 업데이트
+function updateShortsVideoListDisplay(videos) {
+    const shortsVideoListContainer = document.querySelector('.shorts-video-list');
+
+    if (!videos || videos.length === 0) {
+        shortsVideoListContainer.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-icon">✂️</div>
+                <h3>쇼츠 생성 가능한 비디오가 없습니다</h3>
+                <p>먼저 비디오를 업로드하고 분석을 완료해주세요.</p>
+            </div>
+        `;
+        return;
+    }
+
+    // 쇼츠용 비디오 목록 표시
+    shortsVideoListContainer.innerHTML = `
+        <div class="shorts-video-grid">
+            ${videos.map(video => `
+                <div class="shorts-video-item" data-id="${video.id}">
+                    <div class="video-thumbnail">
+                        <img src="${video.thumbnail ? 'http://127.0.0.1:8000' + video.thumbnail : '/assets/placeholder.jpg'}" 
+                             alt="${video.original_name}" 
+                             onerror="this.src='/assets/placeholder.jpg'">
+                        <div class="video-duration">${video.duration || '00:00'}</div>
+                    </div>
+                    <div class="video-info">
+                        <h4>${video.original_name}</h4>
+                        <div class="video-stats">
+                            <span class="scene-count">🎬 ${video.total_scenes}개 장면</span>
+                            <span class="mood-indicator mood-${video.dominant_mood}">${getMoodText(video.dominant_mood)}</span>
+                        </div>
+                        <p class="upload-date">업로드: ${new Date(video.uploaded_at).toLocaleString()}</p>
+                        ${getShortsButton(video)}
+                    </div>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+// 분위기 텍스트 변환
+function getMoodText(mood) {
+    const moodMap = {
+        'happy': '😊 즐거움',
+        'sad': '😢 슬픔',
+        'excited': '🤩 흥미진진',
+        'calm': '😌 평온',
+        'tense': '😰 긴장',
+        'dramatic': '🎭 드라마틱',
+        'neutral': '😐 중성',
+        'unknown': '❓ 알 수 없음'
+    };
+    return moodMap[mood] || '😐 중성';
+}
+
+// 쇼츠 버튼 상태에 따른 HTML 생성
+function getShortsButton(video) {
+    const shortsStatus = video.shorts_status || 'none';
+    
+    switch (shortsStatus) {
+        case 'generating':
+            return `
+                <button class="generate-shorts-btn generating" disabled>
+                    ⏳ 쇼츠 생성 중...
+                </button>
+            `;
+        case 'completed':
+            return `
+                <button class="generate-shorts-btn completed" disabled>
+                    ✅ 생성 완료 (${video.shorts_clips_count}개 클립)
+                </button>
+            `;
+        case 'failed':
+            return `
+                <button onclick="generateShorts(${video.id})" class="generate-shorts-btn failed">
+                    ❌ 재시도
+                </button>
+            `;
+        default:
+            return `
+                <button onclick="generateShorts(${video.id})" class="generate-shorts-btn">
+                    ✂️ 쇼츠 생성
+                </button>
+            `;
+    }
 }
 
 // 쇼츠 생성
-async function generateShorts() {
-    showNotification('정보', '쇼츠 생성 기능은 아직 구현되지 않았습니다.', 'info');
+async function generateShorts(videoId) {
+    try {
+        // 버튼 상태를 즉시 '생성 중'으로 변경
+        updateShortsButtonStatus(videoId, 'generating');
+        
+        const response = await fetch(`http://127.0.0.1:8000/shorts/generate/${videoId}`, {
+            method: 'POST'
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            showNotification('성공', result.message, 'success');
+            // 쇼츠 생성 상태 폴링 시작
+            startShortsPolling(videoId);
+        } else {
+            // 실패 시 버튼 상태 복원
+            updateShortsButtonStatus(videoId, 'failed');
+            throw new Error(result.message || '쇼츠 생성 요청 실패');
+        }
+    } catch (error) {
+        console.error('Shorts generation error:', error);
+        showNotification('오류', error.message, 'error');
+        updateShortsButtonStatus(videoId, 'failed');
+    }
+}
+
+// 쇼츠 버튼 상태 업데이트
+function updateShortsButtonStatus(videoId, status, clipsCount = 0) {
+    const videoItem = document.querySelector(`.shorts-video-item[data-id="${videoId}"]`);
+    if (videoItem) {
+        const buttonContainer = videoItem.querySelector('.video-info');
+        const video = { id: videoId, shorts_status: status, shorts_clips_count: clipsCount };
+        
+        // 기존 버튼 제거 후 새 버튼 추가
+        const oldButton = buttonContainer.querySelector('.generate-shorts-btn');
+        if (oldButton) {
+            oldButton.outerHTML = getShortsButton(video);
+        }
+    }
+}
+
+// 쇼츠 생성 상태 폴링
+function startShortsPolling(videoId) {
+    const pollInterval = setInterval(async () => {
+        try {
+            const response = await fetch('http://127.0.0.1:8000/shorts/videos');
+            const data = await response.json();
+            const video = data.videos.find(v => v.id === videoId);
+            
+            if (video) {
+                if (video.shorts_status === 'completed') {
+                    clearInterval(pollInterval);
+                    updateShortsButtonStatus(videoId, 'completed', video.shorts_clips_count);
+                    showNotification('완료', `쇼츠 생성이 완료되었습니다! (${video.shorts_clips_count}개 클립)`, 'success');
+                } else if (video.shorts_status === 'failed') {
+                    clearInterval(pollInterval);
+                    updateShortsButtonStatus(videoId, 'failed');
+                    showNotification('실패', '쇼츠 생성이 실패했습니다.', 'error');
+                }
+            }
+        } catch (error) {
+            console.error('Shorts polling error:', error);
+        }
+    }, 3000); // 3초마다 체크
+    
+    // 5분 후 자동 종료
+    setTimeout(() => {
+        clearInterval(pollInterval);
+    }, 300000);
 }
 
 // 설정 열기
@@ -403,7 +687,19 @@ function updateStatusIndicator(text, status) {
 
 // Ollama 상태 업데이트
 function updateOllamaStatus(status, message) {
-    ollamaText.textContent = message;
+    // 안전하게 매 호출마다 DOM을 다시 조회 (초기화 타이밍 이슈 대응)
+    const indicator = document.querySelector('.ollama-indicator');
+    const dotEl = document.getElementById('ollama-dot');
+    const textEl = document.getElementById('ollama-text');
+
+    // 숨겨져 있다면 표시
+    if (indicator && indicator.style.display === 'none') {
+        indicator.style.display = 'flex';
+    }
+
+    if (textEl && typeof message === 'string') {
+        textEl.textContent = message;
+    }
 
     // 상태에 따른 색상 및 애니메이션 변경
     const statusConfig = {
@@ -416,8 +712,10 @@ function updateOllamaStatus(status, message) {
     };
 
     const config = statusConfig[status] || statusConfig.checking;
-    ollamaDot.style.backgroundColor = config.color;
-    ollamaDot.style.animation = config.animation;
+    if (dotEl) {
+        dotEl.style.backgroundColor = config.color;
+        dotEl.style.animation = config.animation;
+    }
 }
 
 // Ollama 설치 버튼 이벤트
@@ -456,14 +754,18 @@ ollamaInstallBtn.addEventListener('click', async () => {
     }
 });
 
-ollamaServerBtn.addEventListener('click',async ()=>{
-    console.log('Ollama Serve');
-    try{
-        ollamaInstallBtn.disabled = true;
-    }catch(e){
-        console.error('Failed to start Ollama Serve')
-    } 
-});
+if (ollamaServerBtn) {
+    ollamaServerBtn.addEventListener('click', async () => {
+        console.log('Ollama Serve');
+        try {
+            ollamaInstallBtn.disabled = true;
+            // 서버 시작은 메인 프로세스에 위임 (필요 시 IPC 호출 추가)
+            // await ipcRenderer.invoke('start-ollama-server');
+        } catch (e) {
+            console.error('Failed to start Ollama Serve');
+        }
+    });
+}
 
 // 모델 다운로드 버튼 이벤트
 modelDownloadBtn.addEventListener('click', async () => {
@@ -633,8 +935,7 @@ ipcRenderer.on('ollama-status', (event, data) => {
     // 상태에 따른 버튼 처리
     if (data.status === 'ready') {
         ollamaInstallBtn.style.display = 'none';
-        modelDownloadBtn.disabled = false;
-        modelDownloadBtn.style.display = 'block';
+        modelDownloadBtn.style.display = 'none'; // ready면 버튼 숨김
         progressContainer.style.display = 'none';
     } else if (data.status === 'error') {
         ollamaInstallBtn.disabled = false;
@@ -654,13 +955,85 @@ ipcRenderer.on('download-progress', (event, data) => {
 });
 
 // 앱 초기화
-document.addEventListener('DOMContentLoaded', () => {
-    // 초기 페이지 설정
+document.addEventListener('DOMContentLoaded', async () => {
+    // 초기 페이지 설정만 수행
     switchPage('upload');
 
-    // 상태 표시 업데이트
-    updateStatusIndicator('프로그램 설치', 'ready');
+    // 초기 상태: 체크 중 UI, 버튼 숨김 (메인 프로세스에서 상태 수신 대기)
+    updateOllamaStatus('checking', '상태 확인 중...');
+    ollamaInstallBtn.style.display = 'none';
+    modelDownloadBtn.style.display = 'none';
 
-    // Ollama 상태 확인
-    checkOllamaStatus();
+    // 렌더 이후에도 서버가 늦게 올라오는 경우 대비 폴링 시작
+    startStatusPolling();
 });
+
+// 상태 폴링: 준비 완료되면 자동 종료
+let statusPollingTimer = null;
+async function startStatusPolling() {
+    if (statusPollingTimer) return;
+    statusPollingTimer = setInterval(async () => {
+        try {
+            const result = await ipcRenderer.invoke('check-ollama-status');
+            // 버튼/상태 업데이트
+            applyStatusUI(result);
+
+            if (result.ollamaInstalled && result.serverRunning && result.modelReady) {
+                clearInterval(statusPollingTimer);
+                statusPollingTimer = null;
+            }
+        } catch (e) {
+            console.error('Status polling failed:', e);
+        }
+    }, 1000);
+}
+
+function applyStatusUI(result) {
+    console.log('applyStatusUI input:', result);
+    if (result.ollamaInstalled && result.serverRunning && result.modelReady) {
+        updateOllamaStatus('ready', '모두 준비됨');
+        ollamaInstallBtn.style.display = 'none';
+        modelDownloadBtn.style.display = 'none';
+        console.log('applyStatusUI: set ready -> 모두 준비됨');
+        return;
+    }
+
+    if (!result.ollamaInstalled) {
+        updateOllamaStatus('error', 'Ollama 설치 필요');
+        ollamaInstallBtn.style.display = 'block';
+        ollamaInstallBtn.disabled = false;
+        modelDownloadBtn.style.display = 'none';
+        console.log('applyStatusUI: show install button');
+        return;
+    }
+
+    if (result.ollamaInstalled && !result.serverRunning) {
+        updateOllamaStatus('starting', 'Ollama 서버 시작 필요');
+        ollamaInstallBtn.style.display = 'none';
+        modelDownloadBtn.style.display = 'none';
+        console.log('applyStatusUI: waiting server start');
+        return;
+    }
+
+    if (result.ollamaInstalled && result.serverRunning && !result.modelReady) {
+        updateOllamaStatus('ready', 'Ollama 준비됨 (모델 필요)');
+        ollamaInstallBtn.style.display = 'none';
+        modelDownloadBtn.style.display = 'block';
+        modelDownloadBtn.disabled = false;
+        console.log('applyStatusUI: model needed');
+        return;
+    }
+}
+
+// 디버그 헬퍼: 렌더러 콘솔에서 window.debugCheck() 호출
+window.debugCheck = async () => {
+    try {
+        const r = await ipcRenderer.invoke('check-ollama-status');
+        console.log('debugCheck result:', r);
+        applyStatusUI(r);
+        return r;
+    } catch (e) {
+        console.error('debugCheck error:', e);
+        return null;
+    }
+};
